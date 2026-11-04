@@ -13,6 +13,11 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
+# 首頁路由（讓直接打開網址時不會出現 404）
+@app.route("/")
+def home():
+    return "LINE Bot is running successfully!"
+
 # 請把下方字串替換成您的 LINE Channel Access Token 與 Channel Secret
 CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIgB/YLAJXsUhSV0p5Al/g1ltQk9bu8C7LU76IRKqCuCc5jZGH2Mna8Sv3AcABaODALtOhSINOq8L+ds2yZGJsIFX5QMx11dlrwIdDtWSvBcIfF5+lKMPJgsPuP8EOd98rk7unewdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
@@ -57,12 +62,16 @@ current_lang = "zh"
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers['X-Line-Signature']
+    signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError:
+    except InvalidSignatureError as e:
+        app.logger.error(f"Invalid signature error: {e}")
+        abort(400)
+    except Exception as e:
+        app.logger.error(f"Other error: {e}")
         abort(400)
     return 'OK'
 
@@ -127,6 +136,3 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-    @app.route("/")
-def home():
-    return "LINE Bot is running!"
