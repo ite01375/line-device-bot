@@ -1,4 +1,5 @@
 import os
+import requests  # 1. 引入 requests 套件以發送 HTTP 請求
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -13,14 +14,17 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
-# 首頁路由（讓直接打開網址時不會出現 404）
+# 首頁路由
 @app.route("/")
 def home():
     return "LINE Bot is running successfully!"
 
-# 請把下方字串替換成您的 LINE Channel Access Token 與 Channel Secret
+# LINE 金鑰設定
 CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIgB/YLAJXsUhSV0p5Al/g1ltQk9bu8C7LU76IRKqCuCc5jZGH2Mna8Sv3AcABaODALtOhSINOq8L+ds2yZGJsIFX5QMx11dlrwIdDtWSvBcIfF5+lKMPJgsPuP8EOd98rk7unewdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
+
+# 2. 設定您的 Google Apps Script 網頁應用程式網址 (建議用環境變數，或先直接填入網址字串)
+GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbzbonoL6v0JKciY4j6wGgnfBNSy2VFrKu7ibyW7KNCWFbtZ9QamnMm4c9j2CCKYRl12/exec')
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -59,6 +63,25 @@ LANG = {
 }
 
 current_lang = "zh"
+
+# 3. 定義更新 Google 試算表的函數
+def update_google_sheet(dev_id, status, borrower):
+    """透過 requests.post 將設備借還狀態同步至 Google 試算表"""
+    if not GAS_WEB_APP_URL:
+        print("未設定 GAS_WEB_APP_URL")
+        return
+    
+    payload = {
+        "dev_id": dev_id,
+        "status": status,
+        "borrower": borrower
+    }
+    
+    try:
+        response = requests.post(GAS_WEB_APP_URL, json=payload)
+        print("Google 試算表更新回應:", response.text)
+    except Exception as e:
+        print("連線至 Google 試算表失敗:", e)
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -102,6 +125,8 @@ def handle_message(event):
         for dev_id, info in devices.items():
             status_str = "Available (可用)" if info["status"] == "Available" else f"Borrowed by {info['borrower']}"
             reply_text += f"- [{dev_id}] {info['name']}: {status_str}\n"
+            
+    # 4. 在借用指令成功時呼叫函數
     elif text.startswith("/borrow"):
         parts = text.split()
         if len(parts) > 1:
@@ -110,8 +135,13 @@ def handle_message(event):
                 devices[dev_id]["status"] = "Borrowed"
                 devices[dev_id]["borrower"] = user_name
                 reply_text = LANG[current_lang]["borrow_success"].format(name=devices[dev_id]["name"])
+                
+                # 同步寫入 Google 試算表
+                update_google_sheet(dev_id, "Borrowed", user_name)
             else:
                 reply_text = LANG[current_lang]["borrow_fail"].format(name=dev_id)
+                
+    # 5. 在歸還指令成功時呼叫函數
     elif text.startswith("/return"):
         parts = text.split()
         if len(parts) > 1:
@@ -120,6 +150,9 @@ def handle_message(event):
                 devices[dev_id]["status"] = "Available"
                 devices[dev_id]["borrower"] = None
                 reply_text = LANG[current_lang]["return_success"].format(name=devices[dev_id]["name"])
+                
+                # 同步寫入 Google 試算表（清空借用人）
+                update_google_sheet(dev_id, "Available", "")
             else:
                 reply_text = LANG[current_lang]["not_borrowed"]
 
