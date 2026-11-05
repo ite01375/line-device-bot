@@ -28,7 +28,6 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 # 初始化 Google GenAI (Gemini)
 gemini_api_key = os.getenv('GEMINI_API_KEY')
-print(f"🔑 Gemini API Key 是否存在: {bool(gemini_api_key)}", flush=True)
 ai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
 def get_all_devices():
@@ -93,15 +92,19 @@ def handle_message(event):
     devices = get_all_devices()
     
     user_id = event.source.user_id
+    display_name = "LINE 用戶"
+    
+    # 穩定取得使用者名稱與 LINE ID
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
             profile = line_bot_api.get_profile(user_id)
-            display_name = profile.display_name
-        except Exception:
-            display_name = "訪客"
+            if profile and profile.display_name:
+                display_name = profile.display_name
+        except Exception as e:
+            print(f"⚠️ 無法取得使用者 Profile，改用預設名稱: {e}", flush=True)
 
-    # 組合借用人資訊：顯示名稱 + LINE User ID (方便後台辨識)
+    # 組合借用人資訊：顯示名稱 (LINE ID)
     borrower_info = f"{display_name} ({user_id})"
 
     reply_text = ""
@@ -113,8 +116,8 @@ def handle_message(event):
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被借用"
             reply_text += f"- {info['name']}: {status_str}\n"
 
-    # 2. 還設備指令
-    elif any(kw in text for kw in ["還", "return"]):
+    # 2. 寬鬆的還設備指令（只要包含「還」或「退」且包含設備名稱）
+    elif any(kw in text for kw in ["還", "退", "return"]):
         target_dev = None
         for key in devices:
             if key in text:
@@ -129,10 +132,10 @@ def handle_message(event):
             else:
                 reply_text = f"【{dev_info['name']}】目前本來就是可借用狀態，沒有被借出喔！"
         else:
-            reply_text = "找不到您要歸還的設備名稱。"
+            reply_text = "找不到您要歸還的設備名稱，請輸入「還 設備名稱」。"
 
-    # 3. 借設備指令
-    elif any(kw in text for kw in ["借", "拿", "borrow"]):
+    # 3. 寬鬆的借設備指令（只要包含「借」、「拿」、「用」或「borrow」且包含設備名稱）
+    elif any(kw in text for kw in ["借", "拿", "用", "borrow"]):
         target_dev = None
         for key in devices:
             if key in text:
@@ -147,7 +150,7 @@ def handle_message(event):
             else:
                 reply_text = f"不好意思，【{dev_info['name']}】目前已經被借走了喔！"
         else:
-            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
+            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
     # 4. 多國語言 AI 自由聊天
     else:
