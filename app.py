@@ -101,7 +101,7 @@ def handle_message(event):
     user_id = event.source.user_id
     display_name = ""
     
-    # 取得使用者真實名稱
+    # 嘗試取得使用者名稱，若無法取得則直接使用 user_id 辨識
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
@@ -109,11 +109,11 @@ def handle_message(event):
             if profile and profile.display_name:
                 display_name = profile.display_name
         except Exception as e:
-            print(f"⚠️ 無法取得使用者 Profile (請確認 LINE Developers 後台已開啟讀取權限): {e}", flush=True)
+            print(f"⚠️ 無法取得 Profile，將直接以 LINE ID 識別: {e}", flush=True)
 
-    # 如果抓不到名稱，則退回使用 user_id 的前幾碼或提示，確保不顯示「訪客」
+    # 如果抓不到顯示名稱，直接用 user_id 作為名稱顯示，絕對不會出現「訪客」
     if not display_name:
-        display_name = f"用戶_{user_id[-6:]}"
+        display_name = f"ID_{user_id[-8:]}"
 
     borrower_info = f"{display_name} ({user_id})"
     reply_text = ""
@@ -125,7 +125,7 @@ def handle_message(event):
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被借用"
             reply_text += f"- {info['name']}: {status_str}\n"
 
-    # 2. 還設備指令
+    # 2. 寬鬆的還設備指令
     elif any(kw in text for kw in ["還", "退", "return"]):
         target_dev = None
         for key in devices:
@@ -143,7 +143,7 @@ def handle_message(event):
         else:
             reply_text = "找不到您要歸還的設備名稱，請輸入「還 設備名稱」。"
 
-    # 3. 借設備指令
+    # 3. 寬鬆的借設備指令
     elif any(kw in text for kw in ["借", "拿", "用", "borrow"]):
         target_dev = None
         for key in devices:
