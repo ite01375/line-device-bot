@@ -94,7 +94,7 @@ def handle_message(event):
     user_id = event.source.user_id
     display_name = ""
     
-    # 嘗試取得 LINE 使用者顯示名稱
+    # 嚴謹取得 LINE 使用者顯示名稱
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
@@ -104,11 +104,13 @@ def handle_message(event):
         except Exception as e:
             print(f"⚠️ 無法取得 Profile: {e}", flush=True)
 
-    # 如果抓不到名稱，給予簡短識別碼
+    # 針對您的帳號做直接對應備用（確保不會出現奇怪的會員編號）
     if not display_name:
-        display_name = f"會員_{user_id[-4:]}"
+        if "Uc63582a" in user_id:
+            display_name = "林大衛"
+        else:
+            display_name = f"使用者_{user_id[-4:]}"
 
-    # 借用人欄位直接使用乾淨的名字（不再帶一長串 ID）
     borrower_name = display_name
     reply_text = ""
     
@@ -155,7 +157,7 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 其他所有對話：交給 Gemini AI 進行多國語言自由聊天（說笑話、閒聊等）
+    # 4. 其他所有對話：交給 Gemini AI 進行多國語言自由聊天
     else:
         if ai_client:
             try:
@@ -169,7 +171,7 @@ def handle_message(event):
                 print(f"🤖 Gemini 回覆成功", flush=True)
             except Exception as e:
                 print(f"❌ Gemini AI 發生錯誤: {e}", flush=True)
-                reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
+                reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或各種問題。"
         else:
             reply_text = f"哈囉 {display_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
 
