@@ -28,6 +28,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 # 初始化 Google GenAI (Gemini)
 gemini_api_key = os.getenv('GEMINI_API_KEY')
+print(f"🔑 Gemini API Key 是否存在: {bool(gemini_api_key)}", flush=True)
 ai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
 def get_all_devices():
@@ -91,21 +92,25 @@ def handle_message(event):
     text = event.message.text.strip()
     devices = get_all_devices()
     
+    user_id = event.source.user_id
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
-            profile = line_bot_api.get_profile(event.source.user_id)
-            user_name = profile.display_name
+            profile = line_bot_api.get_profile(user_id)
+            display_name = profile.display_name
         except Exception:
-            user_name = "訪客"
+            display_name = "訪客"
+
+    # 組合借用人資訊：顯示名稱 + LINE User ID (方便後台辨識)
+    borrower_info = f"{display_name} ({user_id})"
 
     reply_text = ""
     
-    # 1. 查詢狀態指令（已修正括號語法）
+    # 1. 查詢狀態指令
     if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢", "status"]):
         reply_text = "📦 目前設備借還狀態:\n"
         for key, info in devices.items():
-            status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被 {info['borrower']} 借用"
+            status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被借用"
             reply_text += f"- {info['name']}: {status_str}\n"
 
     # 2. 還設備指令
@@ -119,7 +124,7 @@ def handle_message(event):
         if target_dev:
             dev_info = devices[target_dev]
             if dev_info["status"] == "Borrowed":
-                reply_text = f"感謝 {user_name}！已幫您完成【{dev_info['name']}】的歸還登記。"
+                reply_text = f"感謝 {display_name}！已幫您完成【{dev_info['name']}】的歸還登記。"
                 update_google_sheet(dev_info["id"], dev_info["name"], "Available", "")
             else:
                 reply_text = f"【{dev_info['name']}】目前本來就是可借用狀態，沒有被借出喔！"
@@ -137,10 +142,10 @@ def handle_message(event):
         if target_dev:
             dev_info = devices[target_dev]
             if dev_info["status"] == "Available":
-                reply_text = f"沒問題！已幫 {user_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", user_name)
+                reply_text = f"沒問題！已幫 {display_name} 登記借用【{dev_info['name']}】祝您使用順利！"
+                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", borrower_info)
             else:
-                reply_text = f"不好意思，【{dev_info['name']}】目前已經被 {dev_info['borrower']} 借走了喔！"
+                reply_text = f"不好意思，【{dev_info['name']}】目前已經被借走了喔！"
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
 
@@ -148,17 +153,20 @@ def handle_message(event):
     else:
         if ai_client:
             try:
-                prompt = f"使用者名稱是 {user_name}。使用者說：{text}。請以親切的 AI 助理身分回覆，支援中文、英文、日文、韓文（依對方使用的語言回覆）。"
+                print(f"🤖 正在呼叫 Gemini AI 回覆訊息...", flush=True)
+                prompt = f"使用者名稱是 {display_name}。使用者說：{text}。請以親切的 AI 助理身分回覆，支援中文、英文、日文、韓文（依對方使用的語言回覆）。"
                 response = ai_client.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=prompt
                 )
                 reply_text = response.text
+                print(f"🤖 Gemini 回覆成功: {reply_text}", flush=True)
             except Exception as e:
-                print(f"Gemini AI 發生錯誤: {e}", flush=True)
-                reply_text = f"哈囉 {user_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
+                print(f"❌ Gemini AI 發生錯誤: {e}", flush=True)
+                reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
         else:
-            reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
+            print("⚠️ 警告: ai_client 未初始化 (Gemini API Key 可能未設定)", flush=True)
+            reply_text = f"哈囉 {display_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
 
     if reply_text:
         with ApiClient(configuration) as api_client:
