@@ -22,7 +22,7 @@ def home():
 
 CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIgB/YLAJXsUhSV0p5Al/g1ltQk9bu8C7LU76IRKqCuCc5jZGH2Mna8Sv3AcABaODALtOhSINOq8L+ds2yZGJsIFX5QMx11dlrwIdDtWSvBcIfF5+lKMPJgsPuP8EOd98rk7unewdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
-GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbxNmWQ_gyyZsqg-6fXaz6PU0MPIwAUVYGDB05JrBfk/exec')
+GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbzbonoL6v0JKciY4j6wGgnfBNSy2VFrKu7ibyW7KNCWFbtZ9QamnMm4c9j2CCKYRl12/exec')
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -158,13 +158,13 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 其他所有對話：交給 Groq (Llama 3.3) 進行超高速多國語言 AI 自由聊天
+    # 4. 其他所有對話：改用正確且穩定的 Groq 模型 (llama3-8b-8192)
     else:
         if ai_client:
             try:
-                print(f"🤖 正在透過 Groq 呼叫 Llama 3 產生回覆...", flush=True)
+                print(f"🤖 正在透過 Groq 呼叫 Llama 模型產生回覆...", flush=True)
                 chat_completion = ai_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="llama3-8b-8192",  # 已修正為 Groq 穩定支援的免費模型
                     messages=[
                         {
                             "role": "system",
