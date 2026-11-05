@@ -29,8 +29,6 @@ GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-GAS_WEB_APP_URL = os.environ.get("GAS_WEB_APP_URL")
-
 def get_all_devices():
     """動態從 Google 試算表（透過 GAS doGet）取得所有設備清單"""
     try:
@@ -84,9 +82,12 @@ def callback():
         abort(400)
     return 'OK'
 
-@handler.add(MessageEvent, message=TextMessageContent)
+@handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text.strip()
+    
+    # 💥【關鍵修復】每次收到訊息時，立刻從 Google 試算表動態抓取最新設備清單！
+    devices = get_all_devices()
     
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -117,7 +118,7 @@ def handle_message(event):
             else:
                 reply_text = f"不好意思，【{dev_info['name']}】目前已經被 {dev_info['borrower']} 借走了喔！"
         else:
-            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。您可以試著說：「借插銷」"
+            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
 
     # 支援口語化辨識：包含「還」
     elif "還" in text:
@@ -147,7 +148,7 @@ def handle_message(event):
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被 {info['borrower']} 借用"
             reply_text += f"- {info['name']}: {status_str}\n"
     else:
-        reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借插銷」\n2. 「還插銷」\n3. 「查詢狀態」"
+        reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借設備名稱」\n2. 「還設備名稱」\n3. 「查詢狀態」"
 
     if reply_text:
         with ApiClient(configuration) as api_client:
