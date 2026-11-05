@@ -11,6 +11,7 @@ from linebot.v3.messaging import (
     TextMessage
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from google import genai
 
 app = Flask(__name__)
 
@@ -24,6 +25,10 @@ GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+
+# 初始化 Google GenAI (Gemini)
+gemini_api_key = os.getenv('GEMINI_API_KEY')
+ai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
 def get_all_devices():
     """動態從 Google 試算表 Devices 分頁取得最新設備清單"""
@@ -96,15 +101,15 @@ def handle_message(event):
 
     reply_text = ""
     
-    # 1. 嚴謹的查詢狀態指令（優先判斷，避免被其他關鍵字干擾）
-    if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢"]):
+    # 1. 查詢狀態指令
+    if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢", "status", "狀態"]:
         reply_text = "📦 目前設備借還狀態:\n"
         for key, info in devices.items():
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被 {info['borrower']} 借用"
             reply_text += f"- {info['name']}: {status_str}\n"
 
-    # 2. 嚴謹的還設備指令
-    elif "還" in text:
+    # 2. 還設備指令
+    elif any(kw in text for kw in ["還", "return"]):
         target_dev = None
         for key in devices:
             if key in text:
@@ -121,8 +126,8 @@ def handle_message(event):
         else:
             reply_text = "找不到您要歸還的設備名稱。"
 
-    # 3. 嚴謹的借設備指令
-    elif "借" in text or "拿" in text:
+    # 3. 借設備指令
+    elif any(kw in text for kw in ["借", "拿", "borrow"]):
         target_dev = None
         for key in devices:
             if key in text:
@@ -139,9 +144,21 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
 
-    # 4. 其它無法辨識的指令
+    # 4. 如果以上都不是，交給 Gemini AI 進行多國語言自由聊天
     else:
-        reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
+        if ai_client:
+            try:
+                prompt = f"使用者名稱是 {user_name}。使用者說：{text}。請以親切的 AI 助理身分回覆，支援中文、英文、日文、韓文（依對方使用的語言回覆）。"
+                response = ai_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                reply_text = response.text
+            except Exception as e:
+                print(f"Gemini AI 發生錯誤: {e}", flush=True)
+                reply_text = f"哈囉 {user_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
+        else:
+            reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
 
     if reply_text:
         with ApiClient(configuration) as api_client:
