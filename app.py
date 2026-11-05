@@ -32,7 +32,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 # 設備模擬資料庫 (名稱對應您的設備)
 devices = {
     "插銷": {"id": "P01", "name": "插銷", "status": "Available", "borrower": None},
-    "MACBOOK": {"id": "P02", "name": "MacBook Pro", "status": "Available", "borrower": None}
+    
 }
 
 def update_google_sheet(dev_id, status, borrower):
