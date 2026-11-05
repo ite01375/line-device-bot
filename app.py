@@ -57,7 +57,7 @@ def get_all_devices():
 def update_google_sheet(dev_id, status, borrower):
     """將借還狀態同步至 Google 試算表"""
     if not GAS_WEB_APP_URL:
-        print("未設定 GAS_WEB_APP_URL")
+        print("未設定 GAS_WEB_APP_URL", flush=True)
         return
     
     payload = {
@@ -68,9 +68,9 @@ def update_google_sheet(dev_id, status, borrower):
     
     try:
         response = requests.post(GAS_WEB_APP_URL, json=payload)
-        print("Google 試算表更新回應:", response.text)
+        print(f"Google 試算表更新回應: {response.text}", flush=True)
     except Exception as e:
-        print("連線至 Google 試算表失敗:", e)
+        print(f"連線至 Google 試算表失敗: {e}", flush=True)
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -87,11 +87,11 @@ def callback():
         abort(400)
     return 'OK'
 
-@handler.add(MessageEvent, message=TextMessage)
+@handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     text = event.message.text.strip()
     
-    # 💥【關鍵修復】每次收到訊息時，立刻從 Google 試算表動態抓取最新設備清單！
+    # 每次收到訊息時，動態從 Google 試算表抓取最新設備清單
     devices = get_all_devices()
     
     with ApiClient(configuration) as api_client:
