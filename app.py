@@ -24,7 +24,7 @@ CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIg
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
 
 # Google Apps Script 網頁應用程式網址
-GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbxNmWQ_gyyZsqg-6fXaz6PU0MPIwAUVYGDB05JrBfk/dev')
+GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbxNmWQ_gyyZsqg-6fXaz6PU0MPIwAUVYGDB05JrBfk/exec')
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
@@ -34,9 +34,6 @@ def get_all_devices():
     print(f"🔍 正在連線請求 GAS 網址: {GAS_WEB_APP_URL}", flush=True)
     try:
         response = requests.get(GAS_WEB_APP_URL)
-        print(f"📡 GAS doGet 回應狀態碼: {response.status_code}", flush=True)
-        print(f"📦 GAS doGet 回應內容: {response.text}", flush=True)
-        
         if response.status_code == 200:
             rows = response.json()
             devices_dict = {}
@@ -51,24 +48,25 @@ def get_all_devices():
             print(f"✅ 成功解析的設備清單: {devices_dict}", flush=True)
             return devices_dict
     except Exception as e:
-        print(f"❌ 動態讀取設備清單失敗 (例外錯誤): {e}", flush=True)
+        print(f"❌ 動態讀取設備清單失敗: {e}", flush=True)
     return {}
 
-def update_google_sheet(dev_id, status, borrower):
-    """將借還狀態同步至 Google 試算表"""
+def update_google_sheet(dev_id, dev_name, status, borrower):
+    """將借還狀態以「新增一行」的方式寫入 Google 試算表歷史紀錄"""
     if not GAS_WEB_APP_URL:
         print("未設定 GAS_WEB_APP_URL", flush=True)
         return
     
     payload = {
         "dev_id": dev_id,
+        "dev_name": dev_name,
         "status": status,
         "borrower": borrower
     }
     
     try:
         response = requests.post(GAS_WEB_APP_URL, json=payload)
-        print(f"Google 試算表更新回應: {response.text}", flush=True)
+        print(f"Google 試算表新增紀錄回應: {response.text}", flush=True)
     except Exception as e:
         print(f"連線至 Google 試算表失敗: {e}", flush=True)
 
@@ -115,11 +113,9 @@ def handle_message(event):
         if target_dev:
             dev_info = devices[target_dev]
             if dev_info["status"] == "Available":
-                dev_info["status"] = "Borrowed"
-                dev_info["borrower"] = user_name
                 reply_text = f"沒問題！已幫 {user_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                # 同步到 Google 試算表
-                update_google_sheet(dev_info["id"], "Borrowed", user_name)
+                # 在 Google 試算表新增一筆借用紀錄
+                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", user_name)
             else:
                 reply_text = f"不好意思，【{dev_info['name']}】目前已經被 {dev_info['borrower']} 借走了喔！"
         else:
@@ -136,11 +132,9 @@ def handle_message(event):
         if target_dev:
             dev_info = devices[target_dev]
             if dev_info["status"] == "Borrowed":
-                dev_info["status"] = "Available"
-                dev_info["borrower"] = None
                 reply_text = f"感謝 {user_name}！已幫您完成【{dev_info['name']}】的歸還登記。"
-                # 同步到 Google 試算表（清空借用人）
-                update_google_sheet(dev_info["id"], "Available", "")
+                # 在 Google 試算表新增一筆歸還紀錄
+                update_google_sheet(dev_info["id"], dev_info["name"], "Available", user_name)
             else:
                 reply_text = f"【{dev_info['name']}】目前本來就是可借用狀態，沒有被借出喔！"
         else:
