@@ -29,12 +29,10 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 # 初始化 Groq AI Client
 groq_api_key = os.getenv('GROQ_API_KEY')
-print(f"🔑 Groq API Key 是否存在: {bool(groq_api_key)}", flush=True)
 ai_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 def get_all_devices():
     """動態從 Google 試算表 Devices 分頁取得最新設備清單"""
-    print(f"🔍 正在連線請求 GAS 網址: {GAS_WEB_APP_URL}", flush=True)
     try:
         response = requests.get(GAS_WEB_APP_URL)
         if response.status_code == 200:
@@ -92,27 +90,27 @@ def handle_message(event):
 
     devices = get_all_devices()
     
+    # 針對當前發話者取得正確的名稱
     user_id = event.source.user_id
     display_name = ""
     
-    # 嘗試取得 LINE 使用者顯示名稱
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
-            profile = line_bot_api.get_profile(user_id)
+            # 依據訊息來源抓取對應的 Profile（支援群組與個人聊天室）
+            if isinstance(event.source, type(event.source).__bases__[0]) and hasattr(event.source, 'group_id'):
+                profile = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
+            else:
+                profile = line_bot_api.get_profile(user_id)
+            
             if profile and profile.display_name:
                 display_name = profile.display_name
         except Exception as e:
-            print(f"⚠️ 無法取得 Profile: {e}", flush=True)
+            print(f"⚠️ 無法取得 Profile，改用備用名稱: {e}", flush=True)
 
-    # 備用對應
     if not display_name:
-        if "Uc63582a" in user_id:
-            display_name = "林大衛"
-        else:
-            display_name = f"會員_{user_id[-4:]}"
+        display_name = f"用戶_{user_id[-4:]}"
 
-    borrower_name = display_name
     reply_text = ""
     
     # 1. 查詢狀態指令
@@ -152,23 +150,23 @@ def handle_message(event):
             dev_info = devices[target_dev]
             if dev_info["status"] == "Available":
                 reply_text = f"沒問題！已幫 {display_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", borrower_name)
+                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", display_name)
             else:
                 reply_text = f"不好意思，【{dev_info['name']}】目前已經被借走了喔！"
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 其他所有對話：改用正確且穩定的 Groq 模型 (llama3-8b-8192)
+    # 4. 其他所有對話：完全交給 Groq (Llama 3) AI 自由聊天
     else:
         if ai_client:
             try:
                 print(f"🤖 正在透過 Groq 呼叫 Llama 模型產生回覆...", flush=True)
                 chat_completion = ai_client.chat.completions.create(
-                    model="llama3-8b-8192",  # 已修正為 Groq 穩定支援的免費模型
+                    model="llama3-8b-8192",
                     messages=[
                         {
                             "role": "system",
-                            "content": f"你是一個親切的 LINE 設備管理與 AI 助理。使用者名稱是 {display_name}。請以對方使用的語言（支援中文、英文、日文、韓文）親切、自然地回覆。"
+                            "content": f"你是一個親切的 LINE 健身房設備管理與 AI 助理。現在正在跟使用者「{display_name}」對話。請以對方使用的語言（支援中文、英文、日文、韓文）親切、自然地回覆。"
                         },
                         {
                             "role": "user",
@@ -179,10 +177,9 @@ def handle_message(event):
                     max_tokens=500
                 )
                 reply_text = chat_completion.choices[0].message.content
-                print(f"🤖 Groq 回覆成功", flush=True)
             except Exception as e:
                 print(f"❌ Groq API 發生錯誤: {e}", flush=True)
-                reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或各種問題。"
+                reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
         else:
             reply_text = f"哈囉 {display_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
 
