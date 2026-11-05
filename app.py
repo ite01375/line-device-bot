@@ -29,7 +29,6 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 # 初始化 Google GenAI (Gemini)
 gemini_api_key = os.getenv('GEMINI_API_KEY')
-print(f"🔑 Gemini API Key 是否存在: {bool(gemini_api_key)}", flush=True)
 ai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
 def get_all_devices():
@@ -48,7 +47,6 @@ def get_all_devices():
                     "status": "Borrowed" if row["status"] == "Borrowed" else "Available",
                     "borrower": row["borrower"] if row["borrower"] else None
                 }
-            print(f"✅ 成功解析的設備清單: {devices_dict}", flush=True)
             return devices_dict
     except Exception as e:
         print(f"❌ 動態讀取設備清單失敗: {e}", flush=True)
@@ -57,7 +55,6 @@ def get_all_devices():
 def update_google_sheet(dev_id, dev_name, status, borrower):
     """更新 Devices 狀態，並在 History 寫入一筆歷史紀錄"""
     if not GAS_WEB_APP_URL:
-        print("未設定 GAS_WEB_APP_URL", flush=True)
         return
     
     payload = {
@@ -68,8 +65,7 @@ def update_google_sheet(dev_id, dev_name, status, borrower):
     }
     
     try:
-        response = requests.post(GAS_WEB_APP_URL, json=payload)
-        print(f"Google 試算表更新回應: {response.text}", flush=True)
+        requests.post(GAS_WEB_APP_URL, json=payload)
     except Exception as e:
         print(f"連線至 Google 試算表失敗: {e}", flush=True)
 
@@ -77,14 +73,11 @@ def update_google_sheet(dev_id, dev_name, status, borrower):
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError as e:
-        app.logger.error(f"Invalid signature error: {e}")
+    except InvalidSignatureError:
         abort(400)
-    except Exception as e:
-        app.logger.error(f"Other error: {e}")
+    except Exception:
         abort(400)
     return 'OK'
 
@@ -92,7 +85,7 @@ def callback():
 def handle_message(event):
     raw_text = event.message.text.strip()
     
-    # 清除 LINE 群組標註機器人的字串（例如 @健身小秘書），避免影響指令判斷
+    # 清除 LINE 群組標註機器人的字串（例如 @健身小秘書）
     text = re.sub(r'@\S+\s*', '', raw_text).strip()
     print(f"💬 處理後的訊息內容: {text}", flush=True)
 
@@ -101,7 +94,7 @@ def handle_message(event):
     user_id = event.source.user_id
     display_name = ""
     
-    # 嘗試取得使用者名稱，若無法取得則直接使用 user_id 辨識
+    # 嘗試取得 LINE 使用者顯示名稱
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
@@ -109,13 +102,14 @@ def handle_message(event):
             if profile and profile.display_name:
                 display_name = profile.display_name
         except Exception as e:
-            print(f"⚠️ 無法取得 Profile，將直接以 LINE ID 識別: {e}", flush=True)
+            print(f"⚠️ 無法取得 Profile: {e}", flush=True)
 
-    # 如果抓不到顯示名稱，直接用 user_id 作為名稱顯示，絕對不會出現「訪客」
+    # 如果抓不到名稱，給予簡短識別碼
     if not display_name:
-        display_name = f"ID_{user_id[-8:]}"
+        display_name = f"會員_{user_id[-4:]}"
 
-    borrower_info = f"{display_name} ({user_id})"
+    # 借用人欄位直接使用乾淨的名字（不再帶一長串 ID）
+    borrower_name = display_name
     reply_text = ""
     
     # 1. 查詢狀態指令
@@ -125,7 +119,7 @@ def handle_message(event):
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被借用"
             reply_text += f"- {info['name']}: {status_str}\n"
 
-    # 2. 寬鬆的還設備指令
+    # 2. 還設備指令
     elif any(kw in text for kw in ["還", "退", "return"]):
         target_dev = None
         for key in devices:
@@ -143,7 +137,7 @@ def handle_message(event):
         else:
             reply_text = "找不到您要歸還的設備名稱，請輸入「還 設備名稱」。"
 
-    # 3. 寬鬆的借設備指令
+    # 3. 借設備指令
     elif any(kw in text for kw in ["借", "拿", "用", "borrow"]):
         target_dev = None
         for key in devices:
@@ -155,13 +149,13 @@ def handle_message(event):
             dev_info = devices[target_dev]
             if dev_info["status"] == "Available":
                 reply_text = f"沒問題！已幫 {display_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", borrower_info)
+                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", borrower_name)
             else:
                 reply_text = f"不好意思，【{dev_info['name']}】目前已經被借走了喔！"
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 多國語言 AI 自由聊天 (Gemini)
+    # 4. 其他所有對話：交給 Gemini AI 進行多國語言自由聊天（說笑話、閒聊等）
     else:
         if ai_client:
             try:
@@ -172,12 +166,11 @@ def handle_message(event):
                     contents=prompt
                 )
                 reply_text = response.text
-                print(f"🤖 Gemini 回覆成功: {reply_text}", flush=True)
+                print(f"🤖 Gemini 回覆成功", flush=True)
             except Exception as e:
                 print(f"❌ Gemini AI 發生錯誤: {e}", flush=True)
                 reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
         else:
-            print("⚠️ 警告: ai_client 未初始化 (Gemini API Key 可能未設定)", flush=True)
             reply_text = f"哈囉 {display_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
 
     if reply_text:
