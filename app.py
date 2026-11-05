@@ -12,13 +12,13 @@ from linebot.v3.messaging import (
     TextMessage
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
-from google import genai
+from groq import Groq
 
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "LINE AI Device Bot is running successfully!"
+    return "LINE AI Device Bot with Groq is running successfully!"
 
 CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIgB/YLAJXsUhSV0p5Al/g1ltQk9bu8C7LU76IRKqCuCc5jZGH2Mna8Sv3AcABaODALtOhSINOq8L+ds2yZGJsIFX5QMx11dlrwIdDtWSvBcIfF5+lKMPJgsPuP8EOd98rk7unewdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
@@ -27,9 +27,10 @@ GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 初始化 Google GenAI (Gemini)
-gemini_api_key = os.getenv('GEMINI_API_KEY')
-ai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+# 初始化 Groq AI Client
+groq_api_key = os.getenv('GROQ_API_KEY')
+print(f"🔑 Groq API Key 是否存在: {bool(groq_api_key)}", flush=True)
+ai_client = Groq(api_key=groq_api_key) if groq_api_key else None
 
 def get_all_devices():
     """動態從 Google 試算表 Devices 分頁取得最新設備清單"""
@@ -94,7 +95,7 @@ def handle_message(event):
     user_id = event.source.user_id
     display_name = ""
     
-    # 嚴謹取得 LINE 使用者顯示名稱
+    # 嘗試取得 LINE 使用者顯示名稱
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
@@ -104,12 +105,12 @@ def handle_message(event):
         except Exception as e:
             print(f"⚠️ 無法取得 Profile: {e}", flush=True)
 
-    # 針對您的帳號做直接對應備用（確保不會出現奇怪的會員編號）
+    # 備用對應
     if not display_name:
         if "Uc63582a" in user_id:
             display_name = "林大衛"
         else:
-            display_name = f"使用者_{user_id[-4:]}"
+            display_name = f"會員_{user_id[-4:]}"
 
     borrower_name = display_name
     reply_text = ""
@@ -157,20 +158,30 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 其他所有對話：交給 Gemini AI 進行多國語言自由聊天
+    # 4. 其他所有對話：交給 Groq (Llama 3.3) 進行超高速多國語言 AI 自由聊天
     else:
         if ai_client:
             try:
-                print(f"🤖 正在呼叫 Gemini AI 回覆訊息...", flush=True)
-                prompt = f"使用者名稱是 {display_name}。使用者說：{text}。請以親切的 AI 助理身分回覆，支援中文、英文、日文、韓文（依對方使用的語言回覆）。"
-                response = ai_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
+                print(f"🤖 正在透過 Groq 呼叫 Llama 3 產生回覆...", flush=True)
+                chat_completion = ai_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": f"你是一個親切的 LINE 設備管理與 AI 助理。使用者名稱是 {display_name}。請以對方使用的語言（支援中文、英文、日文、韓文）親切、自然地回覆。"
+                        },
+                        {
+                            "role": "user",
+                            "content": text
+                        }
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
                 )
-                reply_text = response.text
-                print(f"🤖 Gemini 回覆成功", flush=True)
+                reply_text = chat_completion.choices[0].message.content
+                print(f"🤖 Groq 回覆成功", flush=True)
             except Exception as e:
-                print(f"❌ Gemini AI 發生錯誤: {e}", flush=True)
+                print(f"❌ Groq API 發生錯誤: {e}", flush=True)
                 reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或各種問題。"
         else:
             reply_text = f"哈囉 {display_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
