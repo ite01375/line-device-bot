@@ -14,23 +14,19 @@ from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
-# 首頁路由
 @app.route("/")
 def home():
     return "LINE AI Device Bot is running successfully!"
 
-# LINE 金鑰設定
 CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIgB/YLAJXsUhSV0p5Al/g1ltQk9bu8C7LU76IRKqCuCc5jZGH2Mna8Sv3AcABaODALtOhSINOq8L+ds2yZGJsIFX5QMx11dlrwIdDtWSvBcIfF5+lKMPJgsPuP8EOd98rk7unewdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
-
-# Google Apps Script 網頁應用程式網址
 GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbxNmWQ_gyyZsqg-6fXaz6PU0MPIwAUVYGDB05JrBfk/exec')
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 def get_all_devices():
-    """動態從 Google 試算表（透過 GAS doGet）取得所有設備清單"""
+    """動態從 Google 試算表 Devices 分頁取得最新設備清單"""
     print(f"🔍 正在連線請求 GAS 網址: {GAS_WEB_APP_URL}", flush=True)
     try:
         response = requests.get(GAS_WEB_APP_URL)
@@ -52,7 +48,7 @@ def get_all_devices():
     return {}
 
 def update_google_sheet(dev_id, dev_name, status, borrower):
-    """將借還狀態以「新增一行」的方式寫入 Google 試算表歷史紀錄"""
+    """更新 Devices 狀態，並在 History 寫入一筆歷史紀錄"""
     if not GAS_WEB_APP_URL:
         print("未設定 GAS_WEB_APP_URL", flush=True)
         return
@@ -66,7 +62,7 @@ def update_google_sheet(dev_id, dev_name, status, borrower):
     
     try:
         response = requests.post(GAS_WEB_APP_URL, json=payload)
-        print(f"Google 試算表新增紀錄回應: {response.text}", flush=True)
+        print(f"Google 試算表更新回應: {response.text}", flush=True)
     except Exception as e:
         print(f"連線至 Google 試算表失敗: {e}", flush=True)
 
@@ -88,8 +84,6 @@ def callback():
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     text = event.message.text.strip()
-    
-    # 每次收到訊息時，動態從 Google 試算表抓取最新設備清單
     devices = get_all_devices()
     
     with ApiClient(configuration) as api_client:
@@ -102,7 +96,6 @@ def handle_message(event):
 
     reply_text = ""
     
-    # 支援口語化辨識：包含「借」或「拿」
     if "借" in text or "拿" in text:
         target_dev = None
         for key in devices:
@@ -114,14 +107,12 @@ def handle_message(event):
             dev_info = devices[target_dev]
             if dev_info["status"] == "Available":
                 reply_text = f"沒問題！已幫 {user_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                # 在 Google 試算表新增一筆借用紀錄
                 update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", user_name)
             else:
                 reply_text = f"不好意思，【{dev_info['name']}】目前已經被 {dev_info['borrower']} 借走了喔！"
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
 
-    # 支援口語化辨識：包含「還」
     elif "還" in text:
         target_dev = None
         for key in devices:
@@ -133,14 +124,12 @@ def handle_message(event):
             dev_info = devices[target_dev]
             if dev_info["status"] == "Borrowed":
                 reply_text = f"感謝 {user_name}！已幫您完成【{dev_info['name']}】的歸還登記。"
-                # 在 Google 試算表新增一筆歸還紀錄
-                update_google_sheet(dev_info["id"], dev_info["name"], "Available", user_name)
+                update_google_sheet(dev_info["id"], dev_info["name"], "Available", "")
             else:
                 reply_text = f"【{dev_info['name']}】目前本來就是可借用狀態，沒有被借出喔！"
         else:
             reply_text = "找不到您要歸還的設備名稱。"
 
-    # 查詢狀態指令
     elif "狀態" in text or "表單" in text or "清單" in text:
         reply_text = "📦 目前設備借還狀態:\n"
         for key, info in devices.items():
