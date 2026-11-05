@@ -29,11 +29,27 @@ GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 設備模擬資料庫 (名稱對應您的設備)
-devices = {
-    "插銷": {"id": "P01", "name": "插銷", "status": "Available", "borrower": None},
-    
-}
+GAS_WEB_APP_URL = os.environ.get("GAS_WEB_APP_URL")
+
+def get_all_devices():
+    """動態從 Google 試算表（透過 GAS doGet）取得所有設備清單"""
+    try:
+        response = requests.get(GAS_WEB_APP_URL)
+        if response.status_code == 200:
+            rows = response.json()
+            devices_dict = {}
+            for row in rows:
+                name = row["name"]
+                devices_dict[name] = {
+                    "id": row["id"],
+                    "name": name,
+                    "status": "Borrowed" if row["status"] == "Borrowed" else "Available",
+                    "borrower": row["borrower"] if row["borrower"] else None
+                }
+            return devices_dict
+    except Exception as e:
+        print("❌ 動態讀取設備清單失敗:", e)
+    return {}
 
 def update_google_sheet(dev_id, status, borrower):
     """將借還狀態同步至 Google 試算表"""
