@@ -101,8 +101,8 @@ def handle_message(event):
 
     reply_text = ""
     
-    # 1. 查詢狀態指令
-    if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢", "status", "狀態"]:
+    # 1. 查詢狀態指令（已修正括號語法）
+    if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢", "status"]):
         reply_text = "📦 目前設備借還狀態:\n"
         for key, info in devices.items():
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被 {info['borrower']} 借用"
@@ -144,7 +144,7 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
 
-    # 4. 如果以上都不是，交給 Gemini AI 進行多國語言自由聊天
+    # 4. 多國語言 AI 自由聊天
     else:
         if ai_client:
             try:
