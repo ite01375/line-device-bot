@@ -96,23 +96,14 @@ def handle_message(event):
 
     reply_text = ""
     
-    if "借" in text or "拿" in text:
-        target_dev = None
-        for key in devices:
-            if key in text:
-                target_dev = key
-                break
-        
-        if target_dev:
-            dev_info = devices[target_dev]
-            if dev_info["status"] == "Available":
-                reply_text = f"沒問題！已幫 {user_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", user_name)
-            else:
-                reply_text = f"不好意思，【{dev_info['name']}】目前已經被 {dev_info['borrower']} 借走了喔！"
-        else:
-            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
+    # 1. 嚴謹的查詢狀態指令（優先判斷，避免被其他關鍵字干擾）
+    if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢"]):
+        reply_text = "📦 目前設備借還狀態:\n"
+        for key, info in devices.items():
+            status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被 {info['borrower']} 借用"
+            reply_text += f"- {info['name']}: {status_str}\n"
 
+    # 2. 嚴謹的還設備指令
     elif "還" in text:
         target_dev = None
         for key in devices:
@@ -130,13 +121,27 @@ def handle_message(event):
         else:
             reply_text = "找不到您要歸還的設備名稱。"
 
-    elif "狀態" in text or "表單" in text or "清單" in text:
-        reply_text = "📦 目前設備借還狀態:\n"
-        for key, info in devices.items():
-            status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被 {info['borrower']} 借用"
-            reply_text += f"- {info['name']}: {status_str}\n"
+    # 3. 嚴謹的借設備指令
+    elif "借" in text or "拿" in text:
+        target_dev = None
+        for key in devices:
+            if key in text:
+                target_dev = key
+                break
+        
+        if target_dev:
+            dev_info = devices[target_dev]
+            if dev_info["status"] == "Available":
+                reply_text = f"沒問題！已幫 {user_name} 登記借用【{dev_info['name']}】祝您使用順利！"
+                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", user_name)
+            else:
+                reply_text = f"不好意思，【{dev_info['name']}】目前已經被 {dev_info['borrower']} 借走了喔！"
+        else:
+            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱。"
+
+    # 4. 其它無法辨識的指令
     else:
-        reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借設備名稱」\n2. 「還設備名稱」\n3. 「查詢狀態」"
+        reply_text = f"哈囉 {user_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
 
     if reply_text:
         with ApiClient(configuration) as api_client:
