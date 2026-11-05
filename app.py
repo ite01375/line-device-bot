@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
@@ -28,6 +29,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 # 初始化 Google GenAI (Gemini)
 gemini_api_key = os.getenv('GEMINI_API_KEY')
+print(f"🔑 Gemini API Key 是否存在: {bool(gemini_api_key)}", flush=True)
 ai_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
 def get_all_devices():
@@ -88,13 +90,18 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    text = event.message.text.strip()
+    raw_text = event.message.text.strip()
+    
+    # 清除 LINE 群組標註機器人的字串（例如 @健身小秘書），避免影響指令判斷
+    text = re.sub(r'@\S+\s*', '', raw_text).strip()
+    print(f"💬 處理後的訊息內容: {text}", flush=True)
+
     devices = get_all_devices()
     
     user_id = event.source.user_id
-    display_name = "LINE 用戶"
+    display_name = ""
     
-    # 穩定取得使用者名稱與 LINE ID
+    # 取得使用者真實名稱
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
@@ -102,11 +109,13 @@ def handle_message(event):
             if profile and profile.display_name:
                 display_name = profile.display_name
         except Exception as e:
-            print(f"⚠️ 無法取得使用者 Profile，改用預設名稱: {e}", flush=True)
+            print(f"⚠️ 無法取得使用者 Profile (請確認 LINE Developers 後台已開啟讀取權限): {e}", flush=True)
 
-    # 組合借用人資訊：顯示名稱 (LINE ID)
+    # 如果抓不到名稱，則退回使用 user_id 的前幾碼或提示，確保不顯示「訪客」
+    if not display_name:
+        display_name = f"用戶_{user_id[-6:]}"
+
     borrower_info = f"{display_name} ({user_id})"
-
     reply_text = ""
     
     # 1. 查詢狀態指令
@@ -116,7 +125,7 @@ def handle_message(event):
             status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被借用"
             reply_text += f"- {info['name']}: {status_str}\n"
 
-    # 2. 寬鬆的還設備指令（只要包含「還」或「退」且包含設備名稱）
+    # 2. 還設備指令
     elif any(kw in text for kw in ["還", "退", "return"]):
         target_dev = None
         for key in devices:
@@ -134,7 +143,7 @@ def handle_message(event):
         else:
             reply_text = "找不到您要歸還的設備名稱，請輸入「還 設備名稱」。"
 
-    # 3. 寬鬆的借設備指令（只要包含「借」、「拿」、「用」或「borrow」且包含設備名稱）
+    # 3. 借設備指令
     elif any(kw in text for kw in ["借", "拿", "用", "borrow"]):
         target_dev = None
         for key in devices:
@@ -152,7 +161,7 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 多國語言 AI 自由聊天
+    # 4. 多國語言 AI 自由聊天 (Gemini)
     else:
         if ai_client:
             try:
