@@ -31,11 +31,11 @@ handler = WebhookHandler(CHANNEL_SECRET)
 
 def get_all_devices():
     """動態從 Google 試算表（透過 GAS doGet）取得所有設備清單"""
-    app.logger.info(f"🔍 正在連線請求 GAS 網址: {GAS_WEB_APP_URL}")
+    print(f"🔍 正在連線請求 GAS 網址: {GAS_WEB_APP_URL}", flush=True)
     try:
         response = requests.get(GAS_WEB_APP_URL)
-        app.logger.info(f"📡 GAS doGet 回應狀態碼: {response.status_code}")
-        app.logger.info(f"📦 GAS doGet 回應內容: {response.text}")
+        print(f"📡 GAS doGet 回應狀態碼: {response.status_code}", flush=True)
+        print(f"📦 GAS doGet 回應內容: {response.text}", flush=True)
         
         if response.status_code == 200:
             rows = response.json()
@@ -48,10 +48,10 @@ def get_all_devices():
                     "status": "Borrowed" if row["status"] == "Borrowed" else "Available",
                     "borrower": row["borrower"] if row["borrower"] else None
                 }
-            app.logger.info(f"✅ 成功解析的設備清單: {devices_dict}")
+            print(f"✅ 成功解析的設備清單: {devices_dict}", flush=True)
             return devices_dict
     except Exception as e:
-        app.logger.error(f"❌ 動態讀取設備清單失敗 (例外錯誤): {e}")
+        print(f"❌ 動態讀取設備清單失敗 (例外錯誤): {e}", flush=True)
     return {}
 
 def update_google_sheet(dev_id, status, borrower):
