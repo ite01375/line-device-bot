@@ -33,6 +33,9 @@ groq_api_key = os.getenv("GROQ_API_KEY")
 ai_client = Groq(api_key=groq_api_key, timeout=15.0, max_retries=0) if groq_api_key else None
 print(f"🔑 Groq client 已啟用: {ai_client is not None}", flush=True)
 
+# 可用環境變數 GROQ_MODEL 指定模型；失敗時依序嘗試後備模型
+GROQ_MODELS = [m for m in [os.getenv("GROQ_MODEL"), "openai/gpt-oss-20b", "openai/gpt-oss-120b"] if m]
+
 STATUS_KW = ["狀態", "表單", "清單", "查詢", "status"]
 RETURN_KW = ["還", "退", "return"]
 BORROW_KW = ["借", "拿", "用", "borrow"]
@@ -149,16 +152,26 @@ def ask_ai(text, display_name, devices):
         "若使用者想借/還設備，請告訴他輸入「借 設備名稱」或「還 設備名稱」。\n"
         f"目前設備狀態：\n{status_lines or '（無資料）'}"
     )
-    resp = ai_client.chat.completions.create(
-        model="llama-3.1-8b-instant",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text},
-        ],
-        temperature=0.7,
-        max_tokens=500,
-    )
-    return resp.choices[0].message.content
+    last_err = None
+    for model in GROQ_MODELS:
+        try:
+            resp = ai_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.7,
+                max_completion_tokens=1024,
+                reasoning_effort="low",  # gpt-oss 為推理模型，降低推理量以加快回覆
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            if content:
+                return content
+        except Exception as e:
+            last_err = e
+            print(f"⚠️ 模型 {model} 失敗: {type(e).__name__}: {e}", flush=True)
+    raise last_err or RuntimeError("AI 沒有回覆內容")
 
 
 def send_reply(line_bot_api, event, text):
