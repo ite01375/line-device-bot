@@ -9,185 +9,210 @@ from linebot.v3.messaging import (
     ApiClient,
     MessagingApi,
     ReplyMessageRequest,
-    TextMessage
+    TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from groq import Groq
 
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return "LINE AI Device Bot with Groq is running successfully!"
-
-CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', 'emDP838ZCo+/MTkIgB/YLAJXsUhSV0p5Al/g1ltQk9bu8C7LU76IRKqCuCc5jZGH2Mna8Sv3AcABaODALtOhSINOq8L+ds2yZGJsIFX5QMx11dlrwIdDtWSvBcIfF5+lKMPJgsPuP8EOd98rk7unewdB04t89/1O/w1cDnyilFU=')
-CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', 'c3ff21ce567e4b2edd5ab3916d7fee53')
-GAS_WEB_APP_URL = os.getenv('GAS_WEB_APP_URL', 'https://script.google.com/macros/s/AKfycbzbonoL6v0JKciY4j6wGgnfBNSy2VFrKu7ibyW7KNCWFbtZ9QamnMm4c9j2CCKYRl12/exec')
+# ⚠️ 金鑰只從環境變數讀取，不要寫死在程式碼裡
+CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+GAS_WEB_APP_URL = os.getenv("GAS_WEB_APP_URL")
 
 configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# 初始化 Groq AI Client
-groq_api_key = os.getenv('GROQ_API_KEY')
+groq_api_key = os.getenv("GROQ_API_KEY")
 ai_client = Groq(api_key=groq_api_key) if groq_api_key else None
+print(f"🔑 Groq client 已啟用: {ai_client is not None}", flush=True)
+
+STATUS_KW = ["狀態", "表單", "清單", "查詢", "status"]
+RETURN_KW = ["還", "退", "return"]
+BORROW_KW = ["借", "拿", "用", "borrow"]
+QUESTION_HINTS = ["怎麼", "如何", "什麼", "為什麼", "嗎", "?", "？", "how", "what", "why"]
+
+
+@app.route("/")
+def home():
+    return "LINE AI Device Bot with Groq is running successfully!"
+
 
 def get_all_devices():
-    """動態從 Google 試算表 Devices 分頁取得最新設備清單"""
     try:
-        response = requests.get(GAS_WEB_APP_URL)
+        response = requests.get(GAS_WEB_APP_URL, timeout=8)
         if response.status_code == 200:
-            rows = response.json()
-            devices_dict = {}
-            for row in rows:
+            devices = {}
+            for row in response.json():
                 name = row["name"]
-                devices_dict[name] = {
+                devices[name] = {
                     "id": row["id"],
                     "name": name,
                     "status": "Borrowed" if row["status"] == "Borrowed" else "Available",
-                    "borrower": row["borrower"] if row["borrower"] else None
+                    "borrower": row["borrower"] or None,
                 }
-            return devices_dict
+            return devices
     except Exception as e:
-        print(f"❌ 動態讀取設備清單失敗: {e}", flush=True)
+        print(f"❌ 讀取設備清單失敗: {e}", flush=True)
     return {}
 
-def update_google_sheet(dev_id, dev_name, status, borrower):
-    """更新 Devices 狀態，並在 History 寫入一筆歷史紀錄"""
+
+def update_google_sheet(dev_id, dev_name, status, borrower, user_id):
     if not GAS_WEB_APP_URL:
         return
-    
     payload = {
         "dev_id": dev_id,
         "dev_name": dev_name,
         "status": status,
-        "borrower": borrower
+        "borrower": borrower,
+        "user_id": user_id,  # ← 新增：LINE userId
     }
-    
     try:
-        requests.post(GAS_WEB_APP_URL, json=payload)
+        r = requests.post(GAS_WEB_APP_URL, json=payload, timeout=8)
+        print(f"📝 GAS 回應 {r.status_code}: {r.text[:100]}", flush=True)
     except Exception as e:
         print(f"連線至 Google 試算表失敗: {e}", flush=True)
 
-@app.route("/callback", methods=['POST'])
+
+def get_user_info(event, line_bot_api):
+    """回傳 (user_id, display_name)，依來源類型使用正確的 Profile API"""
+    src = event.source
+    user_id = getattr(src, "user_id", None)
+    src_type = getattr(src, "type", "user")
+    display_name = ""
+
+    if user_id:
+        try:
+            if src_type == "group":
+                p = line_bot_api.get_group_member_profile(src.group_id, user_id)
+            elif src_type == "room":
+                p = line_bot_api.get_room_member_profile(src.room_id, user_id)
+            else:
+                p = line_bot_api.get_profile(user_id)
+            display_name = p.display_name or ""
+        except Exception as e:
+            print(f"⚠️ 無法取得 Profile ({src_type}): {e}", flush=True)
+
+    if not display_name:
+        display_name = f"用戶_{user_id[-4:]}" if user_id else "未知用戶"
+    return user_id or "", display_name
+
+
+def find_device(text, devices):
+    """名稱長的優先比對，避免短名稱誤中"""
+    for name in sorted(devices, key=len, reverse=True):
+        if name in text:
+            return name
+    return None
+
+
+def ask_ai(text, display_name, devices):
+    status_lines = "\n".join(
+        f"- {d['name']}: {'已借出' if d['status'] == 'Borrowed' else '可借用'}"
+        for d in devices.values()
+    )
+    system_prompt = (
+        f"你是一個親切的 LINE 健身房設備管理與 AI 助理，正在跟「{display_name}」對話。\n"
+        "請務必使用對方訊息所用的語言回覆（中文、英文、日文、韓文皆可），簡短自然。\n"
+        "若使用者想借/還設備，請告訴他輸入「借 設備名稱」或「還 設備名稱」。\n"
+        f"目前設備狀態：\n{status_lines or '（無資料）'}"
+    )
+    resp = ai_client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ],
+        temperature=0.7,
+        max_tokens=500,
+    )
+    return resp.choices[0].message.content
+
+
+@app.route("/callback", methods=["POST"])
 def callback():
-    signature = request.headers.get('X-Line-Signature', '')
+    signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-    except Exception:
+    except Exception as e:
+        print(f"❌ handler 錯誤: {e}", flush=True)
         abort(400)
-    return 'OK'
+    return "OK"
+
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
     raw_text = event.message.text.strip()
-    
-    # 清除 LINE 群組標註機器人的字串（例如 @健身小秘書）
-    text = re.sub(r'@\S+\s*', '', raw_text).strip()
-    print(f"💬 處理後的訊息內容: {text}", flush=True)
+    text = re.sub(r"@\S+\s*", "", raw_text).strip()
+    print(f"💬 訊息: {text}", flush=True)
+    if not text:
+        return
 
     devices = get_all_devices()
-    
-    # 取得發話者名稱
-    user_id = event.source.user_id
-    display_name = ""
-    
+
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-        try:
-            profile = line_bot_api.get_profile(user_id)
-            if profile and profile.display_name:
-                display_name = profile.display_name
-        except Exception as e:
-            print(f"⚠️ 無法取得 Profile: {e}", flush=True)
+        user_id, display_name = get_user_info(event, line_bot_api)
+        print(f"👤 {display_name} / {user_id}", flush=True)
 
-    if not display_name:
-        display_name = f"用戶_{user_id[-4:]}"
+        lower = text.lower()
+        is_question = any(h in lower for h in QUESTION_HINTS)
+        target_dev = find_device(text, devices)
+        reply_text = ""
 
-    reply_text = ""
-    
-    # 1. 查詢狀態指令
-    if any(keyword in text for keyword in ["狀態", "表單", "清單", "查詢", "status"]):
-        reply_text = "📦 目前設備借還狀態:\n"
-        for key, info in devices.items():
-            status_str = "🟢 可借用" if info["status"] == "Available" else f"🔴 已被借用"
-            reply_text += f"- {info['name']}: {status_str}\n"
+        # 1. 查詢狀態（短句才算指令）
+        if len(text) <= 10 and any(k in lower for k in STATUS_KW):
+            reply_text = "📦 目前設備借還狀態:\n"
+            for info in devices.values():
+                s = "🟢 可借用" if info["status"] == "Available" else "🔴 已被借用"
+                reply_text += f"- {info['name']}: {s}\n"
 
-    # 2. 還設備指令
-    elif any(kw in text for kw in ["還", "退", "return"]):
-        target_dev = None
-        for key in devices:
-            if key in text:
-                target_dev = key
-                break
-        
-        if target_dev:
-            dev_info = devices[target_dev]
-            if dev_info["status"] == "Borrowed":
-                reply_text = f"感謝 {display_name}！已幫您完成【{dev_info['name']}】的歸還登記。"
-                update_google_sheet(dev_info["id"], dev_info["name"], "Available", "")
+        # 2. 還設備：需有設備名稱 + 動作詞，且不是疑問句
+        elif target_dev and not is_question and any(k in lower for k in RETURN_KW):
+            info = devices[target_dev]
+            if info["status"] == "Borrowed":
+                reply_text = f"感謝 {display_name}！已完成【{info['name']}】的歸還登記。"
+                update_google_sheet(info["id"], info["name"], "Available", "", user_id)
             else:
-                reply_text = f"【{dev_info['name']}】目前本來就是可借用狀態，沒有被借出喔！"
-        else:
-            reply_text = "找不到您要歸還的設備名稱，請輸入「還 設備名稱」。"
+                reply_text = f"【{info['name']}】目前本來就是可借用狀態喔！"
 
-    # 3. 借設備指令
-    elif any(kw in text for kw in ["借", "拿", "用", "borrow"]):
-        target_dev = None
-        for key in devices:
-            if key in text:
-                target_dev = key
-                break
-        
-        if target_dev:
-            dev_info = devices[target_dev]
-            if dev_info["status"] == "Available":
-                reply_text = f"沒問題！已幫 {display_name} 登記借用【{dev_info['name']}】祝您使用順利！"
-                update_google_sheet(dev_info["id"], dev_info["name"], "Borrowed", display_name)
+        # 3. 借設備
+        elif target_dev and not is_question and any(k in lower for k in BORROW_KW):
+            info = devices[target_dev]
+            if info["status"] == "Available":
+                reply_text = f"沒問題！已幫 {display_name} 登記借用【{info['name']}】，祝使用順利！"
+                update_google_sheet(info["id"], info["name"], "Borrowed", display_name, user_id)
             else:
-                reply_text = f"不好意思，【{dev_info['name']}】目前已經被借走了喔！"
-        else:
-            reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
+                reply_text = f"不好意思，【{info['name']}】目前已經被借走了喔！"
 
-    # 4. 其他所有對話：透過 Groq (llama-3.1-8b-instant) 進行高速多國語言 AI 聊天
-    else:
-        if ai_client:
-            try:
-                print(f"🤖 正在透過 Groq 呼叫 Llama 模型產生回覆...", flush=True)
-                chat_completion = ai_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",  # 使用官方最新支援的模型名稱
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": f"你是一個親切的 LINE 健身房設備管理與 AI 助理。現在正在跟使用者「{display_name}」對話。請以對方使用的語言（支援中文、英文、日文、韓文）親切、自然地回覆。"
-                        },
-                        {
-                            "role": "user",
-                            "content": text
-                        }
-                    ],
-                    temperature=0.7,
-                    max_tokens=500
-                )
-                reply_text = chat_completion.choices[0].message.content
-                print(f"🤖 Groq 回覆成功", flush=True)
-            except Exception as e:
-                print(f"❌ Groq API 發生錯誤: {e}", flush=True)
-                reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
-        else:
-            reply_text = f"哈囉 {display_name}！您可以直接對我說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
+        # 4. 以「借 / 還」開頭但沒給設備名稱 → 提示
+        elif re.match(r"^(借|還|borrow|return)\b?", lower) and not is_question:
+            names = "、".join(devices.keys()) or "（無資料）"
+            reply_text = f"請輸入「借 設備名稱」或「還 設備名稱」。\n可用設備：{names}"
 
-    if reply_text:
-        with ApiClient(configuration) as api_client:
-            line_bot_api = MessagingApi(api_client)
+        # 5. 其餘全部交給 AI
+        else:
+            if ai_client:
+                try:
+                    reply_text = ask_ai(text, display_name, devices)
+                except Exception as e:
+                    print(f"❌ Groq 錯誤: {type(e).__name__}: {e}", flush=True)
+                    reply_text = f"哈囉 {display_name}！您可以說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
+            else:
+                reply_text = f"哈囉 {display_name}！您可以說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
+
+        if reply_text:
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
+                    messages=[TextMessage(text=reply_text[:4900])],
                 )
             )
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
