@@ -90,23 +90,18 @@ def handle_message(event):
 
     devices = get_all_devices()
     
-    # 針對當前發話者取得正確的名稱
+    # 取得發話者名稱
     user_id = event.source.user_id
     display_name = ""
     
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         try:
-            # 依據訊息來源抓取對應的 Profile（支援群組與個人聊天室）
-            if isinstance(event.source, type(event.source).__bases__[0]) and hasattr(event.source, 'group_id'):
-                profile = line_bot_api.get_group_member_profile(event.source.group_id, user_id)
-            else:
-                profile = line_bot_api.get_profile(user_id)
-            
+            profile = line_bot_api.get_profile(user_id)
             if profile and profile.display_name:
                 display_name = profile.display_name
         except Exception as e:
-            print(f"⚠️ 無法取得 Profile，改用備用名稱: {e}", flush=True)
+            print(f"⚠️ 無法取得 Profile: {e}", flush=True)
 
     if not display_name:
         display_name = f"用戶_{user_id[-4:]}"
@@ -156,7 +151,7 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 其他所有對話：完全交給 Groq (Llama 3) AI 自由聊天
+    # 4. 其他所有對話：透過 Groq (llama3-8b-8192) 進行高速多國語言 AI 聊天
     else:
         if ai_client:
             try:
