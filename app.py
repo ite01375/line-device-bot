@@ -151,13 +151,13 @@ def handle_message(event):
         else:
             reply_text = f"收到您的借用需求，但找不到您想借的設備名稱，請輸入「借 設備名稱」。"
 
-    # 4. 其他所有對話：透過 Groq (llama3-8b-8192) 進行高速多國語言 AI 聊天
+    # 4. 其他所有對話：透過 Groq (llama-3.1-8b-instant) 進行高速多國語言 AI 聊天
     else:
         if ai_client:
             try:
                 print(f"🤖 正在透過 Groq 呼叫 Llama 模型產生回覆...", flush=True)
                 chat_completion = ai_client.chat.completions.create(
-                    model="llama3-8b-8192",
+                    model="llama-3.1-8b-instant",  # 已修正為目前最新的穩定模型
                     messages=[
                         {
                             "role": "system",
@@ -172,6 +172,7 @@ def handle_message(event):
                     max_tokens=500
                 )
                 reply_text = chat_completion.choices[0].message.content
+                print(f"🤖 Groq 回覆成功", flush=True)
             except Exception as e:
                 print(f"❌ Groq API 發生錯誤: {e}", flush=True)
                 reply_text = f"哈囉 {display_name}！您可以對我說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
