@@ -1,8 +1,10 @@
 import os
 import re
+import json
 import time
 import threading
 from datetime import datetime, timezone, timedelta
+from urllib.parse import parse_qs
 
 import requests
 from flask import Flask, request, abort
@@ -15,8 +17,10 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     PushMessageRequest,
     TextMessage,
+    FlexMessage,
+    FlexContainer,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
 from groq import Groq
 
 app = Flask(__name__)
@@ -36,7 +40,8 @@ print(f"🔑 Groq client 已啟用: {ai_client is not None}", flush=True)
 # 可用環境變數 GROQ_MODEL 指定模型；失敗時依序嘗試後備模型
 GROQ_MODELS = [m for m in [os.getenv("GROQ_MODEL"), "openai/gpt-oss-20b", "openai/gpt-oss-120b"] if m]
 
-STATUS_KW = ["狀態", "表單", "清單", "查詢", "status"]
+# 這些關鍵字（短句）會顯示按鈕選單
+MENU_KW = ["選單", "菜單", "面板", "按鈕", "menu", "狀態", "表單", "清單", "查詢", "status"]
 RETURN_KW = ["還", "退", "return"]
 BORROW_KW = ["借", "拿", "用", "borrow"]
 QUESTION_HINTS = ["怎麼", "如何", "什麼", "為什麼", "嗎", "?", "？", "how", "what", "why"]
@@ -45,7 +50,7 @@ QUESTION_HINTS = ["怎麼", "如何", "什麼", "為什麼", "嗎", "?", "？", 
 DEVICE_TTL = 20
 _dev_cache = {"data": {}, "ts": 0.0}
 _profile_cache = {}
-_seen_msgs = []          # 已處理的 message id（去重）
+_seen = []               # 已處理的事件 id（去重）
 _seen_lock = threading.Lock()
 
 
@@ -54,6 +59,7 @@ def home():
     return "LINE AI Device Bot with Groq is running successfully!"
 
 
+# ================= 試算表 =================
 def get_all_devices(force=False):
     now = time.time()
     if not force and _dev_cache["data"] and now - _dev_cache["ts"] < DEVICE_TTL:
@@ -65,7 +71,7 @@ def get_all_devices(force=False):
             for row in r.json():
                 name = row["name"]
                 devices[name] = {
-                    "id": row["id"],
+                    "id": str(row["id"]),
                     "name": name,
                     "status": "Borrowed" if row["status"] == "Borrowed" else "Available",
                     "borrower": row["borrower"] or None,
@@ -75,7 +81,7 @@ def get_all_devices(force=False):
             return devices
     except Exception as e:
         print(f"❌ 讀取設備清單失敗: {e}", flush=True)
-    return _dev_cache["data"]  # 失敗時使用舊資料
+    return _dev_cache["data"]
 
 
 def _write_sheet(payload):
@@ -87,7 +93,6 @@ def _write_sheet(payload):
 
 
 def update_google_sheet_async(dev_id, dev_name, status, borrower, user_id, operator):
-    """背景寫入，不阻塞回覆"""
     if not GAS_WEB_APP_URL:
         return
     payload = {
@@ -101,6 +106,120 @@ def update_google_sheet_async(dev_id, dev_name, status, borrower, user_id, opera
     threading.Thread(target=_write_sheet, args=(payload,), daemon=True).start()
 
 
+# ================= 借 / 還 =================
+def borrow_device(info, user_id, display_name):
+    if info["status"] == "Available":
+        info["status"], info["borrower"] = "Borrowed", display_name
+        _dev_cache["ts"] = time.time()
+        update_google_sheet_async(info["id"], info["name"], "Borrowed", display_name, user_id, display_name)
+        return f"沒問題！已幫 {display_name} 登記借用【{info['name']}】，祝使用順利！"
+    who = f"（{info['borrower']}）" if info["borrower"] else ""
+    return f"不好意思，【{info['name']}】目前已經被借走了喔！{who}"
+
+
+def return_device(info, user_id, display_name):
+    if info["status"] == "Borrowed":
+        info["status"], info["borrower"] = "Available", None
+        _dev_cache["ts"] = time.time()
+        update_google_sheet_async(info["id"], info["name"], "Available", "", user_id, display_name)
+        return f"感謝 {display_name}！已完成【{info['name']}】的歸還登記。"
+    return f"【{info['name']}】目前本來就是可借用狀態喔！"
+
+
+# ================= Flex 按鈕介面 =================
+GREEN = "#1DB446"
+RED = "#E53935"
+ROWS_PER_BUBBLE = 6
+
+
+def _device_row(info):
+    available = info["status"] == "Available"
+    color = GREEN if available else RED
+    if available:
+        status_text = "🟢 可借用"
+        label, act = "借用", "borrow"
+    else:
+        who = f" · {info['borrower']}" if info["borrower"] else ""
+        status_text = f"🔴 已借出{who}"
+        label, act = "歸還", "return"
+    return {
+        "type": "box",
+        "layout": "horizontal",
+        "alignItems": "center",
+        "spacing": "md",
+        "contents": [
+            {
+                "type": "box",
+                "layout": "vertical",
+                "flex": 3,
+                "contents": [
+                    {"type": "text", "text": info["name"], "weight": "bold", "size": "md", "wrap": True},
+                    {"type": "text", "text": status_text, "size": "xs", "color": color, "wrap": True},
+                ],
+            },
+            {
+                "type": "button",
+                "style": "primary",
+                "height": "sm",
+                "flex": 2,
+                "color": color,
+                "action": {
+                    "type": "postback",
+                    "label": label,
+                    "data": f"act={act}&id={info['id']}",
+                },
+            },
+        ],
+    }
+
+
+def build_device_flex(devices):
+    items = list(devices.values())
+    chunks = [items[i:i + ROWS_PER_BUBBLE] for i in range(0, len(items), ROWS_PER_BUBBLE)][:12]
+    bubbles = []
+    for idx, chunk in enumerate(chunks, 1):
+        body_contents = []
+        for n, info in enumerate(chunk):
+            if n > 0:
+                body_contents.append({"type": "separator", "margin": "md"})
+            body_contents.append(_device_row(info))
+        title = "🏋️ 設備借還" + (f"（{idx}/{len(chunks)}）" if len(chunks) > 1 else "")
+        bubbles.append({
+            "type": "bubble",
+            "size": "mega",
+            "header": {
+                "type": "box",
+                "layout": "vertical",
+                "backgroundColor": "#27ACB2",
+                "paddingAll": "md",
+                "contents": [{"type": "text", "text": title, "weight": "bold", "size": "lg", "color": "#FFFFFF"}],
+            },
+            "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body_contents},
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "contents": [{
+                    "type": "button",
+                    "style": "secondary",
+                    "height": "sm",
+                    "action": {"type": "postback", "label": "🔄 重新整理", "data": "act=menu"},
+                }],
+            },
+        })
+    contents = bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles}
+    return FlexMessage(
+        alt_text="🏋️ 設備借還狀態（請在手機查看按鈕）",
+        contents=FlexContainer.from_json(json.dumps(contents, ensure_ascii=False)),
+    )
+
+
+def menu_messages(devices):
+    if not devices:
+        return [TextMessage(text="目前讀不到設備清單，請稍後再試。")]
+    return [build_device_flex(devices)]
+
+
+# ================= 使用者資訊 =================
 def get_user_info(event, line_bot_api):
     src = event.source
     user_id = getattr(src, "user_id", None)
@@ -137,6 +256,7 @@ def find_device(text, devices):
     return None
 
 
+# ================= AI =================
 def ask_ai(text, display_name, devices):
     now = datetime.now(timezone(timedelta(hours=8)))
     weekdays = "一二三四五六日"
@@ -149,7 +269,7 @@ def ask_ai(text, display_name, devices):
         f"你是一個親切的 LINE 健身房設備管理與 AI 助理，正在跟「{display_name}」對話。\n"
         f"現在時間：{today}\n"
         "請務必使用對方訊息所用的語言回覆（中文、英文、日文、韓文皆可），簡短自然。\n"
-        "若使用者想借/還設備，請告訴他輸入「借 設備名稱」或「還 設備名稱」。\n"
+        "若使用者想借/還設備，請告訴他輸入「選單」開啟按鈕介面，或輸入「借 設備名稱」/「還 設備名稱」。\n"
         f"目前設備狀態：\n{status_lines or '（無資料）'}"
     )
     last_err = None
@@ -163,7 +283,7 @@ def ask_ai(text, display_name, devices):
                 ],
                 temperature=0.7,
                 max_completion_tokens=1024,
-                reasoning_effort="low",  # gpt-oss 為推理模型，降低推理量以加快回覆
+                reasoning_effort="low",
             )
             content = (resp.choices[0].message.content or "").strip()
             if content:
@@ -174,11 +294,11 @@ def ask_ai(text, display_name, devices):
     raise last_err or RuntimeError("AI 沒有回覆內容")
 
 
-def send_reply(line_bot_api, event, text):
-    text = text[:4900]
+# ================= 回覆 =================
+def send_reply(line_bot_api, event, messages):
     try:
         line_bot_api.reply_message_with_http_info(
-            ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=text)])
+            ReplyMessageRequest(reply_token=event.reply_token, messages=messages[:5])
         )
     except Exception as e:
         print(f"⚠️ reply 失敗，改用 push: {e}", flush=True)
@@ -190,13 +310,24 @@ def send_reply(line_bot_api, event, text):
         )
         if target:
             try:
-                line_bot_api.push_message(
-                    PushMessageRequest(to=target, messages=[TextMessage(text=text)])
-                )
+                line_bot_api.push_message(PushMessageRequest(to=target, messages=messages[:5]))
             except Exception as e2:
                 print(f"❌ push 也失敗: {e2}", flush=True)
 
 
+def seen_before(key):
+    if not key:
+        return False
+    with _seen_lock:
+        if key in _seen:
+            return True
+        _seen.append(key)
+        if len(_seen) > 500:
+            del _seen[:250]
+    return False
+
+
+# ================= Webhook =================
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
@@ -206,21 +337,47 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     except Exception as e:
-        # 一律回 200，避免 LINE 重送事件造成重複借還
         print(f"❌ handler 錯誤: {type(e).__name__}: {e}", flush=True)
     return "OK"
 
 
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    if seen_before(getattr(event, "webhook_event_id", None)):
+        return
+
+    params = {k: v[0] for k, v in parse_qs(event.postback.data or "").items()}
+    act = params.get("act")
+    dev_id = params.get("id")
+    print(f"🔘 按鈕: {params}", flush=True)
+
+    devices = get_all_devices()
+
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        user_id, display_name = get_user_info(event, line_bot_api)
+        print(f"👤 {display_name} / {user_id}", flush=True)
+
+        messages = []
+        if act in ("borrow", "return"):
+            info = next((d for d in devices.values() if d["id"] == dev_id), None)
+            if not info:
+                messages.append(TextMessage(text="找不到這個設備，請重新開啟選單。"))
+            else:
+                result = borrow_device(info, user_id, display_name) if act == "borrow" \
+                    else return_device(info, user_id, display_name)
+                messages.append(TextMessage(text=result))
+                messages += menu_messages(devices)  # 附上最新的按鈕選單
+        else:
+            messages += menu_messages(devices)
+
+        send_reply(line_bot_api, event, messages)
+
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    # 去重
-    msg_id = event.message.id
-    with _seen_lock:
-        if msg_id in _seen_msgs:
-            return
-        _seen_msgs.append(msg_id)
-        if len(_seen_msgs) > 500:
-            del _seen_msgs[:250]
+    if seen_before(event.message.id):
+        return
 
     raw_text = event.message.text.strip()
     text = re.sub(r"@\S+\s*", "", raw_text).strip()
@@ -238,54 +395,37 @@ def handle_message(event):
         lower = text.lower()
         is_question = any(h in lower for h in QUESTION_HINTS)
         target_dev = find_device(text, devices)
-        reply_text = ""
-        sheet_job = None
+        messages = []
 
-        if len(text) <= 10 and any(k in lower for k in STATUS_KW):
-            reply_text = "📦 目前設備借還狀態:\n"
-            for info in devices.values():
-                s = "🟢 可借用" if info["status"] == "Available" else "🔴 已被借用"
-                reply_text += f"- {info['name']}: {s}\n"
+        # 1. 按鈕選單
+        if len(text) <= 10 and any(k in lower for k in MENU_KW):
+            messages += menu_messages(devices)
 
+        # 2. 文字指令：還
         elif target_dev and not is_question and any(k in lower for k in RETURN_KW):
-            info = devices[target_dev]
-            if info["status"] == "Borrowed":
-                reply_text = f"感謝 {display_name}！已完成【{info['name']}】的歸還登記。"
-                info["status"], info["borrower"] = "Available", None
-                _dev_cache["ts"] = time.time()
-                sheet_job = (info["id"], info["name"], "Available", "", user_id, display_name)
-            else:
-                reply_text = f"【{info['name']}】目前本來就是可借用狀態喔！"
+            messages.append(TextMessage(text=return_device(devices[target_dev], user_id, display_name)))
 
+        # 3. 文字指令：借
         elif target_dev and not is_question and any(k in lower for k in BORROW_KW):
-            info = devices[target_dev]
-            if info["status"] == "Available":
-                reply_text = f"沒問題！已幫 {display_name} 登記借用【{info['name']}】，祝使用順利！"
-                info["status"], info["borrower"] = "Borrowed", display_name
-                _dev_cache["ts"] = time.time()
-                sheet_job = (info["id"], info["name"], "Borrowed", display_name, user_id, display_name)
-            else:
-                reply_text = f"不好意思，【{info['name']}】目前已經被借走了喔！"
+            messages.append(TextMessage(text=borrow_device(devices[target_dev], user_id, display_name)))
 
+        # 4. 只說「借 / 還」沒給設備 → 直接給按鈕選單
         elif re.match(r"^(借|還|borrow|return)", lower) and not is_question:
-            names = "、".join(devices.keys()) or "（無資料）"
-            reply_text = f"請輸入「借 設備名稱」或「還 設備名稱」。\n可用設備：{names}"
+            messages.append(TextMessage(text="請點選下方按鈕，或輸入「借 設備名稱」/「還 設備名稱」。"))
+            messages += menu_messages(devices)
 
+        # 5. 其餘交給 AI
         else:
             if ai_client:
                 try:
-                    reply_text = ask_ai(text, display_name, devices)
+                    messages.append(TextMessage(text=ask_ai(text, display_name, devices)[:4900]))
                 except Exception as e:
                     print(f"❌ Groq 錯誤: {type(e).__name__}: {e}", flush=True)
-                    reply_text = f"哈囉 {display_name}！您可以說「借 設備名稱」、「還 設備名稱」或「查詢狀態」。"
+                    messages.append(TextMessage(text=f"哈囉 {display_name}！輸入「選單」就能用按鈕借還設備喔。"))
             else:
-                reply_text = f"哈囉 {display_name}！您可以說：\n1. 「借 設備名稱」\n2. 「還 設備名稱」\n3. 「查詢狀態」"
+                messages.append(TextMessage(text=f"哈囉 {display_name}！輸入「選單」就能用按鈕借還設備喔。"))
 
-        # 先回覆，再寫試算表
-        if reply_text:
-            send_reply(line_bot_api, event, reply_text)
-        if sheet_job:
-            update_google_sheet_async(*sheet_job)
+        send_reply(line_bot_api, event, messages)
 
 
 if __name__ == "__main__":
