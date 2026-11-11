@@ -592,17 +592,22 @@ def handle_postback(event):
         if act in ("borrow", "return"):
             info = next((d for d in devices.values() if d["id"] == dev_id), None)
             if not info:
-                messages.append(TextMessage(text="找不到這個設備，請重新開啟選單。"))
+                messages.append(TextMessage(text=f"{display_name}：找不到這個設備，請輸入「選單」重新開啟。"))
             else:
+                label = "借用" if act == "borrow" else "歸還"
+                before = info["status"]
                 if act == "borrow":
                     result = borrow_device(info, user_id, display_name, get_notify_target(event))
                 else:
                     result = return_device(info, user_id, display_name)
-                messages.append(TextMessage(text=result))
-                if view == "mine":
-                    messages += my_messages(devices, user_id, display_name)
-                else:
-                    messages += menu_messages(devices)
+                # 標明是誰按的（按鈕不會在聊天室留下文字，避免看起來像機器人自己亂發）
+                messages.append(TextMessage(text=f"👤 {display_name} 按了「{label}」【{info['name']}】\n{result}"))
+                # 操作有生效才附上最新卡片；沒生效（舊卡片、非本人等）只回短訊息，避免洗版
+                if info["status"] != before:
+                    if view == "mine":
+                        messages += my_messages(devices, user_id, display_name)
+                    else:
+                        messages += menu_messages(devices)
         elif act == "mine":
             messages += my_messages(devices, user_id, display_name)
         else:
